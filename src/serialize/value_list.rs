@@ -1,9 +1,8 @@
 use std::any::Any;
-use std::ops::Deref;
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyList, PyNone, PyTuple};
 use pyo3::{Bound, Py, PyAny};
 
 use scylla::errors::SerializationError;
@@ -19,13 +18,6 @@ use crate::serialize::value::{PyAnyWrapper, PythonDriverSerializationError};
 pub(crate) struct PyAnyWrapperValueList {
     pub(crate) inner: Py<PyAny>,
     pub(crate) is_empty: bool,
-}
-
-impl Deref for PyAnyWrapperValueList {
-    type Target = Py<PyAny>;
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
 }
 
 impl PyAnyWrapperValueList {
@@ -107,6 +99,15 @@ impl PyAnyWrapperValueList {
     }
 }
 
+impl Default for PyAnyWrapperValueList {
+    fn default() -> Self {
+        Python::attach(|py| Self {
+            inner: PyNone::get(py).as_unbound().as_any().clone_ref(py),
+            is_empty: true,
+        })
+    }
+}
+
 impl SerializeRow for PyAnyWrapperValueList {
     fn serialize(
         &self,
@@ -114,7 +115,7 @@ impl SerializeRow for PyAnyWrapperValueList {
         row_writer: &mut RowWriter,
     ) -> Result<(), SerializationError> {
         Python::attach(|py| {
-            let val = self.bind(py);
+            let val = self.inner.bind(py);
 
             if val.is_instance_of::<PyList>() {
                 Self::serialize_sequence::<PyList>(val, ctx, row_writer)
@@ -122,6 +123,8 @@ impl SerializeRow for PyAnyWrapperValueList {
                 Self::serialize_sequence::<PyTuple>(val, ctx, row_writer)
             } else if let Ok(value_list) = val.cast::<PyDict>() {
                 Self::serialize_dict(value_list, ctx, row_writer)
+            } else if val.is_none() {
+                Ok(())
             } else {
                 Err(SerializationError::new(PyTypeError::new_err(
                     "expected Python tuple, list or dict",
@@ -132,6 +135,39 @@ impl SerializeRow for PyAnyWrapperValueList {
 
     fn is_empty(&self) -> bool {
         self.is_empty
+    }
+}
+
+fn is_empty_row(row: &Bound<'_, PyAny>) -> bool {
+    if row.is_none() {
+        return true;
+    }
+    row.len().map(|len| len == 0).unwrap_or(false)
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for PyAnyWrapperValueList {
+    type Error = PyErr;
+
+    fn extract(val: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
+        if val.is_instance_of::<PyList>()
+            || val.is_instance_of::<PyTuple>()
+            || val.is_instance_of::<PyDict>()
+            || val.is_none()
+        {
+            let is_empty = is_empty_row(&val);
+            return Ok(PyAnyWrapperValueList {
+                inner: val.as_unbound().clone_ref(val.py()), // TODO: Can this be simpler?
+                is_empty,
+            });
+        }
+
+        let python_type_name = val.get_type().name()?;
+        let python_type_name = python_type_name.extract::<&str>()?;
+
+        Err(PyErr::new::<PyTypeError, _>(format!(
+            "Invalid row type: got {}, expected Python tuple, list or dict",
+            python_type_name
+        )))
     }
 }
 

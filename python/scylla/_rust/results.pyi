@@ -5,7 +5,7 @@ from typing import Dict, List, Union, Tuple, Any, Set
 from uuid import UUID
 from dateutil.relativedelta import relativedelta
 
-CqlNative = Union[
+ResultCqlNative = Union[
     # CQL:
     # - Counter
     # - TinyInt
@@ -59,26 +59,26 @@ CqlNative = Union[
     None,
 ]
 
-CqlCollection = Union[
+ResultCqlCollection = Union[
     # CQL:
     # - List
     # - Vector
-    List["CqlValue"],
+    List["ResultCqlValue"],
     # CQL:
     # - Set
-    Set["CqlValue"],
+    Set["ResultCqlValue"],
     # CQL:
     # - Tuple
-    Tuple["CqlValue", ...],
+    Tuple["ResultCqlValue", ...],
     # CQL:
     # - Map
     # - UserDefinedType (UDT)
-    Dict["CqlValue", "CqlValue"],
+    Dict["ResultCqlValue", "ResultCqlValue"],
 ]
 
-CqlValue = Union[
-    CqlNative,
-    CqlCollection,
+ResultCqlValue = Union[
+    ResultCqlNative,
+    ResultCqlCollection,
 ]
 
 class ColumnIterator:
@@ -87,13 +87,13 @@ class ColumnIterator:
 
 class RowFactory:
     def __init__(self) -> None: ...
-    def build(self, column_iterator: ColumnIterator) -> Dict[str, CqlValue]: ...
+    def build(self, column_iterator: ColumnIterator) -> Dict[str, ResultCqlValue]: ...
 
 class Column:
     @property
     def column_name(self) -> str: ...
     @property
-    def value(self) -> CqlValue: ...
+    def value(self) -> ResultCqlValue: ...
 
 class RowsIterator:
     def __next__(self) -> Any: ...

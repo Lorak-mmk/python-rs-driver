@@ -1,7 +1,7 @@
-from typing import Sequence, AbstractSet, TypeAlias, Mapping
-from .results import CqlNative
+from typing import Sequence, TypeAlias, Mapping, Union, Tuple, AbstractSet
 import ipaddress
 from datetime import date, datetime, time
+from dateutil.relativedelta import relativedelta
 from decimal import Decimal
 from uuid import UUID
 
@@ -13,26 +13,81 @@ class UnsetType:
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
 
-CqlCollection: TypeAlias = (
-    # CQL: List, Tuple, Vector
-    Sequence["CqlValue"]
-    # CQL: Set
-    | AbstractSet["CqlValue"]
-    # CQL: Map, UserDefinedType (UDT)
-    | Mapping[int, "CqlValue"]
-    | Mapping[float, "CqlValue"]
-    | Mapping[str, "CqlValue"]
-    | Mapping[bool, "CqlValue"]
-    | Mapping[bytes, "CqlValue"]
-    | Mapping[Decimal, "CqlValue"]
-    | Mapping[UUID, "CqlValue"]
-    | Mapping[ipaddress.IPv4Address, "CqlValue"]
-    | Mapping[ipaddress.IPv6Address, "CqlValue"]
-    | Mapping[date, "CqlValue"]
-    | Mapping[datetime, "CqlValue"]
-    | Mapping[time, "CqlValue"]
-)
+RequestCqlNative = Union[
+    # CQL:
+    # - Counter
+    # - TinyInt
+    # - SmallInt
+    # - Int
+    # - BigInt
+    # - Varint
+    int,
+    # CQL:
+    # - Float
+    # - Double
+    float,
+    # CQL:
+    # - Ascii
+    # - Text
+    str,
+    # CQL:
+    # - Boolean
+    bool,
+    # CQL:
+    # - Blob
+    bytes,
+    # CQL:
+    # - Decimal
+    Decimal,
+    # CQL:
+    # - Uuid
+    # - Timeuuid
+    UUID,
+    # CQL:
+    # - Inet (IPv4)
+    ipaddress.IPv4Address,
+    # CQL:
+    # - Inet (IPv6)
+    ipaddress.IPv6Address,
+    # CQL:
+    # - Date
+    date,
+    # CQL:
+    # - Timestamp
+    datetime,
+    # CQL:
+    # - Time
+    time,
+    # CQL:
+    # - Duration
+    relativedelta,
+    # CQL:
+    # - Empty
+    # - null
+    None,
+]
 
-CqlValue = CqlCollection | CqlNative
+RequestCqlCollection = Union[
+    # CQL:
+    # - List
+    # - Vector
+    Sequence["RequestCqlValue"],
+    # CQL:
+    # - Set
+    AbstractSet["RequestCqlValue"],
+    # CQL:
+    # - Tuple
+    Tuple["RequestCqlValue", ...],
+    # CQL:
+    # - Map
+    # - UserDefinedType (UDT)
+    Mapping["RequestCqlValue", "RequestCqlValue"],
+]
 
-CqlValueList: TypeAlias = Sequence[CqlValue] | Mapping[str, CqlValue]
+RequestCqlValue = Union[
+    RequestCqlNative,
+    RequestCqlCollection,
+]
+
+
+CqlValueList: TypeAlias = Sequence[RequestCqlValue] | Mapping[str, RequestCqlValue]
