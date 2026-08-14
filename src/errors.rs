@@ -63,6 +63,7 @@ create_exception!(errors, TlsError, ScyllaError);
 
 create_exception!(errors, LoadBalancingPolicyError, ScyllaError);
 create_exception!(errors, RetryPolicyError, ScyllaError);
+create_exception!(errors, FutureCancelledError, PyException);
 
 // Policy: DriverError types are pure Rust and contain PyErr only as source
 // in cases where the error originated from Python code (e.g. during extraction or user callbacks).
@@ -1799,5 +1800,9 @@ pub(crate) fn errors(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<(
         py.get_type::<LoadBalancingPolicyError>(),
     )?;
     module.add("RetryPolicyError", py.get_type::<RetryPolicyError>())?;
+    module.add(
+        "FutureCancelledError",
+        py.get_type::<FutureCancelledError>(),
+    )?;
     Ok(())
 }

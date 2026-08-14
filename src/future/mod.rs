@@ -1,4 +1,5 @@
 use crate::RUNTIME;
+use crate::errors::FutureCancelledError;
 use crate::future::asyncio::waker::AsyncioWaker;
 use crate::future::asyncio::{BoxedFuture, Coroutine, PollResult};
 use crate::future::callbacks::CallbackKind;
@@ -416,6 +417,13 @@ impl PyDriverFuture {
         self.close_future(py, PyRuntimeError::new_err("future was closed"));
     }
 
+    /// Cancel the future. Unlike `close()`, this raises `FutureCancelledError`
+    /// from `result()`/`__next__()`/callbacks, distinguishing a deliberate
+    /// cancellation from the future being torn down.
+    fn cancel(&self, py: Python<'_>) {
+        self.close_future(py, FutureCancelledError::new_err("future was cancelled"));
+    }
+
     /// Get the result of this future.
     ///
     /// If the future is still pending, this blocks the calling thread until
@@ -459,6 +467,17 @@ impl PyDriverFuture {
     fn on_error(&self, py: Python<'_>, callback: Py<PyAny>) {
         let cb = CallbackKind::on_error(callback);
         self.register_callback(py, cb);
+    }
+
+    /// Returns True if the future completed because `cancel()` was called.
+    fn cancelled(&self, py: Python<'_>) -> bool {
+        let state = self.inner.state.lock_py_attached(py).unwrap();
+        match &*state {
+            FutureState::Ready { result: Err(err) } => {
+                err.is_instance_of::<FutureCancelledError>(py)
+            }
+            _ => false,
+        }
     }
 }
 
