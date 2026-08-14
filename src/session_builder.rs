@@ -8,7 +8,7 @@ use crate::policies::host_filter::PyHostFilter;
 use crate::policies::timestamp_generator::PyTimestampGenerator;
 use crate::session::PySession;
 use crate::tls::{PyTlsConfig, PyTlsContext};
-use crate::utils::{ParsedAddress, ParsedAddressList, WithOriginalPyObject};
+use crate::utils::{ParsedAddress, ParsedAddressList, PyDuration, WithOriginalPyObject};
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
 use scylla::authentication::PlainTextAuthenticator;
@@ -643,25 +643,6 @@ impl PySessionBuilderConfig {
         PySelfIdentity {
             inner: self.config.identity.clone(),
         }
-    }
-}
-
-pub(crate) struct PyDuration(pub(crate) Duration);
-
-impl<'py> FromPyObject<'_, 'py> for PyDuration {
-    type Error = DriverSessionConfigError;
-    fn extract(obj: Borrowed<'_, 'py, PyAny>) -> Result<Self, Self::Error> {
-        if let Ok(duration) = obj.extract::<Duration>() {
-            return Ok(PyDuration(duration));
-        }
-
-        if let Ok(secs) = obj.extract::<f64>() {
-            let duration = Duration::try_from_secs_f64(secs)
-                .map_err(|_| DriverSessionConfigError::invalid_duration(obj))?;
-            return Ok(PyDuration(duration));
-        }
-
-        Err(DriverSessionConfigError::invalid_duration(obj))
     }
 }
 

@@ -638,6 +638,40 @@ impl From<AddressParseError> for PyErr {
     }
 }
 
+/* Duration parsing errors */
+
+/// Error type for duration parsing failures.
+#[derive(Debug)]
+pub enum DurationParseError {
+    /// The Python object is neither a `datetime.timedelta` nor a non-negative finite float.
+    InvalidType { type_name: String },
+}
+
+impl DurationParseError {
+    pub fn invalid_type(obj: Borrowed<PyAny>) -> Self {
+        Self::InvalidType {
+            type_name: get_type_name(obj),
+        }
+    }
+}
+
+impl fmt::Display for DurationParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidType { type_name } => write!(
+                f,
+                "Expected a datetime.timedelta or a non-negative finite float (seconds), got: {type_name}"
+            ),
+        }
+    }
+}
+
+impl From<DurationParseError> for PyErr {
+    fn from(e: DurationParseError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(e.to_string())
+    }
+}
+
 /// Errors related to invalid session configuration.
 #[derive(Debug)]
 #[must_use]
@@ -653,11 +687,6 @@ pub enum DriverSessionConfigError {
 
     /// The object does not have a `translate` method and is not a dict-based address translator.
     InvalidAddressTranslator {
-        type_name: String,
-    },
-
-    /// The duration/timedelta object is neither a datetime.timedelta nor a non-negative finite float.
-    InvalidDuration {
         type_name: String,
     },
 
@@ -684,12 +713,6 @@ pub enum DriverSessionConfigError {
 
 impl DriverSessionConfigError {
     /* Constructors */
-    pub fn invalid_duration(obj: Borrowed<PyAny>) -> Self {
-        Self::InvalidDuration {
-            type_name: get_type_name(obj),
-        }
-    }
-
     pub fn invalid_authenticator_provider(obj: Borrowed<PyAny>) -> Self {
         Self::InvalidAuthenticatorProvider {
             type_name: get_type_name(obj),
@@ -754,13 +777,6 @@ impl From<DriverSessionConfigError> for PyErr {
 
             DriverSessionConfigError::InvalidPortRange => {
                 let message = "Invalid port range: start port must be less than or equal to end port, and both ports must be greater than or equal to 1024";
-                build_session_config_pyerr(py, message, None, None)
-            }
-
-            DriverSessionConfigError::InvalidDuration { type_name } => {
-                let message = format!(
-                    "Expected a datetime.timedelta or a non-negative finite float (seconds), got: {type_name}"
-                );
                 build_session_config_pyerr(py, message, None, None)
             }
 
