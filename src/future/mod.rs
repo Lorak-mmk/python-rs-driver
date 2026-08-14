@@ -2,6 +2,7 @@ use crate::RUNTIME;
 use crate::future::asyncio::waker::AsyncioWaker;
 use crate::future::asyncio::{BoxedFuture, Coroutine, PollResult};
 use crate::future::callbacks::CallbackKind;
+use crate::utils::PyDuration;
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::exceptions::PyStopIteration;
 use pyo3::exceptions::PyTimeoutError;
@@ -11,6 +12,7 @@ use pyo3::{BoundObject, Py, PyAny, PyResult};
 use std::future::Future;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::Wake;
+use std::time::Duration;
 
 use tokio::task::AbortHandle;
 
@@ -58,6 +60,8 @@ enum FutureState {
 
 struct FutureInner {
     state: Mutex<FutureState>,
+    /// Notified when state transitions to Ready.
+    ready: Condvar,
 }
 
 /// A Python awaitable wrapping a Rust future.
@@ -182,6 +186,7 @@ impl PyDriverFuture {
                             result: clone_result(py, &result),
                         };
                         drop(state);
+                        self.inner.ready.notify_all();
                         Err(raise_stop_iteration(py, &result))
                     }
                 }
@@ -222,6 +227,9 @@ impl PyDriverFuture {
 
             (callbacks, waker)
         };
+
+        self.inner.ready.notify_all();
+
         if let Some(waker) = waker {
             waker.wake();
         }
@@ -230,6 +238,66 @@ impl PyDriverFuture {
             CallbackKind::fire_all(py, callbacks, &err_result);
         }
     }
+
+    /// Release the GIL, wait on the condvar until state is Ready or `timeout`
+    /// elapses, then return the result. Raises `TimeoutError` on timeout.
+    fn wait_for_ready(&self, py: Python<'_>, timeout: Option<Duration>) -> PyResult<Py<PyAny>> {
+        let timed_out = py.detach(|| {
+            let state = self.inner.state.lock().unwrap();
+            match timeout {
+                None => {
+                    let _guard = self
+                        .inner
+                        .ready
+                        .wait_while(state, |s| !matches!(s, FutureState::Ready { .. }))
+                        .unwrap();
+                    false
+                }
+                Some(timeout) => {
+                    let (guard, result) = self
+                        .inner
+                        .ready
+                        .wait_timeout_while(state, timeout, |s| {
+                            !matches!(s, FutureState::Ready { .. })
+                        })
+                        .unwrap();
+
+                    result.timed_out() && !matches!(*guard, FutureState::Ready { .. })
+                }
+            }
+        });
+
+        if timed_out {
+            return Err(PyTimeoutError::new_err("DriverFuture.result() timed out"));
+        }
+
+        let state = self.inner.state.lock_py_attached(py).unwrap();
+        match &*state {
+            FutureState::Ready { result } => clone_result(py, result),
+            _ => unreachable!("condvar woke but state is not Ready"),
+        }
+    }
+
+    /// Block until the future is ready, returning the result.
+    /// If `timeout` elapses first, raises `TimeoutError`.
+    fn block_until_ready(&self, py: Python<'_>, timeout: Option<Duration>) -> PyResult<Py<PyAny>> {
+        let mut state = self.inner.state.lock_py_attached(py).unwrap();
+        match &mut *state {
+            FutureState::Ready { result } => clone_result(py, result),
+
+            FutureState::PendingTokio { .. } => {
+                drop(state);
+                self.wait_for_ready(py, timeout)
+            }
+
+            FutureState::PendingAsyncio { .. } => {
+                Self::ensure_started(&self.inner, &mut state);
+                drop(state);
+                self.wait_for_ready(py, timeout)
+            }
+        }
+    }
+
     /// Register a [`CallbackKind`] on this future.
     ///
     /// - If already `Ready`, invokes the callback immediately.
@@ -274,6 +342,7 @@ impl PyDriverFuture {
                         result: clone_result(py, &result),
                     };
                     drop(state);
+                    self.inner.ready.notify_all();
                     Err(raise_stop_iteration(py, &result))
                 }
             },
@@ -297,6 +366,7 @@ impl PyDriverFuture {
                 drop(state);
 
                 waker.wake();
+                self.inner.ready.notify_all();
                 CallbackKind::fire_all(py, taken, &err_result);
 
                 // Re-raise the thrown exception.
@@ -344,6 +414,16 @@ impl PyDriverFuture {
 
     fn close(&self, py: Python<'_>) {
         self.close_future(py, PyRuntimeError::new_err("future was closed"));
+    }
+
+    /// Get the result of this future.
+    ///
+    /// If the future is still pending, this blocks the calling thread until
+    /// it completes (releasing the GIL while waiting). If `timeout` is
+    /// given and elapses before the future completes, raises `TimeoutError`.
+    #[pyo3(signature = (timeout=None))]
+    fn result(&self, py: Python<'_>, timeout: Option<PyDuration>) -> PyResult<Py<PyAny>> {
+        self.block_until_ready(py, timeout.map(|d| d.0))
     }
 
     /// Register a callback to be invoked when the future completes successfully.
