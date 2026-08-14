@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::Wake;
+use crate::RUNTIME;
 use crate::future::asyncio::waker::AsyncioWaker;
 use crate::future::asyncio::{BoxedFuture, Coroutine, PollResult};
 use crate::future::callbacks::CallbackKind;
@@ -66,6 +67,99 @@ pub struct PyDriverFuture {
 }
 
 impl PyDriverFuture {
+    /// Spawn a future on tokio, returning the abort handle.
+    /// On completion the spawned task transitions `state` to `Ready`,
+    /// fires any registered callbacks, wakes the asyncio waker, and notifies
+    /// the condvar.
+    fn spawn_future_on_tokio<F>(
+        future: F,
+        inner: &Arc<FutureInner>,
+        waker: &Arc<AsyncioWaker>,
+    ) -> AbortHandle
+    where
+        F: Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+    {
+        let inner_clone = Arc::clone(inner);
+        let waker_clone = Arc::clone(waker);
+
+        let handle = RUNTIME.spawn(async move {
+            let result = future.await;
+
+            Python::attach(|py| {
+                let callbacks = {
+                    let mut state = inner_clone.state.lock_py_attached(py).unwrap();
+                    match &mut *state {
+                        FutureState::PendingTokio { callbacks, .. } => {
+                            let taken = std::mem::take(callbacks);
+                            *state = FutureState::Ready {
+                                result: clone_result(py, &result),
+                            };
+                            Some(taken)
+                        }
+                        _ => None,
+                    }
+                };
+
+                // `None` means the future was already closed/cancelled/thrown-into
+                // by the time this task completed. There is nothing left to notify.
+                let Some(callbacks) = callbacks else {
+                    return;
+                };
+
+                if callbacks.is_empty() {
+                    waker_clone.wake();
+                    inner_clone.ready.notify_all();
+                    return;
+                }
+
+                let result_for_cbs = clone_result(py, &result);
+                RUNTIME.spawn_blocking(move || {
+                    Python::attach(|py| {
+                        CallbackKind::fire_all(py, callbacks, &result_for_cbs);
+                    });
+
+                    waker_clone.wake();
+                    inner_clone.ready.notify_all();
+                });
+            });
+        });
+
+        handle.abort_handle()
+    }
+
+    /// Transition from PendingAsyncio to PendingTokio by spawning the given
+    /// future on the tokio runtime.
+    /// Must be called while holding the state lock.
+    fn transition_to_tokio(
+        future: BoxedFuture,
+        waker: Arc<AsyncioWaker>,
+        inner: &Arc<FutureInner>,
+        state_guard: &mut std::sync::MutexGuard<'_, FutureState>,
+    ) {
+        let abort_handle = Self::spawn_future_on_tokio(future, inner, &waker);
+
+        **state_guard = FutureState::PendingTokio {
+            callbacks: Vec::new(),
+            abort_handle: Some(abort_handle),
+            waker,
+        };
+    }
+
+    /// If `state_guard` is `PendingAsyncio`, take its future/waker and
+    /// transition to `PendingTokio`. No-op otherwise.
+    /// Must be called while holding the state lock.
+    fn ensure_started(
+        inner: &Arc<FutureInner>,
+        state_guard: &mut std::sync::MutexGuard<'_, FutureState>,
+    ) {
+        if let FutureState::PendingAsyncio { coroutine } = &mut **state_guard {
+            let (future, waker) = coroutine
+                .take_future_and_waker()
+                .expect("PendingAsyncio coroutine has no future");
+            Self::transition_to_tokio(future, waker, inner, state_guard);
+        }
+    }
+
     /// Poll the coroutine (__next__).
     fn poll_coroutine(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let mut state = self.inner.state.lock_py_attached(py).unwrap();
