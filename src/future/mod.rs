@@ -10,6 +10,7 @@ use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
 use pyo3::{BoundObject, Py, PyAny, PyResult};
 mod asyncio;
+mod callbacks;
 /// Internal state of a PyDriverFuture.
 enum FutureState {
     /// Future is driven by the asyncio executor.
