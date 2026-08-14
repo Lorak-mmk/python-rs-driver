@@ -72,6 +72,56 @@ pub struct PyDriverFuture {
 }
 
 impl PyDriverFuture {
+    /// Create a PyDriverFuture starting in PendingAsyncio (default).
+    fn new<F>(future: F) -> Self
+    where
+        F: Future<Output = PyResult<Py<PyAny>>> + Send + 'static,
+    {
+        Self {
+            inner: Arc::new(FutureInner {
+                state: Mutex::new(FutureState::PendingAsyncio {
+                    coroutine: Coroutine::new(future),
+                }),
+                ready: Condvar::new(),
+            }),
+        }
+    }
+
+    /// Create a `Py<PyDriverFuture>` from a future returning `Result<T, E>`.
+    /// Starts in PendingAsyncio.
+    pub(crate) fn spawn<Fut, T, E>(py: Python<'_>, future: Fut) -> PyResult<Py<PyDriverFuture>>
+    where
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+        T: for<'py> IntoPyObject<'py>,
+        E: Into<PyErr>,
+    {
+        Py::new(
+            py,
+            PyDriverFuture::new(async move {
+                let result = future.await;
+                Python::attach(|py| {
+                    result.map_err(Into::into).and_then(|v| {
+                        v.into_pyobject(py)
+                            .map(|b| b.into_any().unbind())
+                            .map_err(Into::into)
+                    })
+                })
+            }),
+        )
+    }
+    /// Create an already-resolved PyDriverFuture.
+    pub(crate) fn ready(py: Python, result: PyResult<Py<PyAny>>) -> PyResult<Py<PyDriverFuture>> {
+        Py::new(
+            py,
+            PyDriverFuture {
+                inner: Arc::new(FutureInner {
+                    state: Mutex::new(FutureState::Ready { result }),
+                    ready: Condvar::new(),
+                }),
+            },
+        )
+    }
+
     /// Spawn a future on tokio, returning the abort handle.
     /// On completion the spawned task transitions `state` to `Ready`,
     /// fires any registered callbacks, wakes the asyncio waker, and notifies
