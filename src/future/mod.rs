@@ -469,6 +469,12 @@ impl PyDriverFuture {
         self.register_callback(py, cb);
     }
 
+    /// Returns True if the future has completed (successfully or with an error).
+    fn done(&self, py: Python<'_>) -> bool {
+        let state = self.inner.state.lock_py_attached(py).unwrap();
+        matches!(*state, FutureState::Ready { .. })
+    }
+
     /// Returns True if the future completed because `cancel()` was called.
     fn cancelled(&self, py: Python<'_>) -> bool {
         let state = self.inner.state.lock_py_attached(py).unwrap();
