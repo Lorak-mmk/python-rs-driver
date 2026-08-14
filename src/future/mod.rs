@@ -426,6 +426,21 @@ impl PyDriverFuture {
         self.block_until_ready(py, timeout.map(|d| d.0))
     }
 
+    /// Force the transition from `PendingAsyncio` to `PendingTokio`.
+    ///
+    /// Spawns the inner future onto the tokio runtime immediately, without
+    /// waiting for a callback registration or a `result()` call. No-op if
+    /// the future is already `PendingTokio` or `Ready`. Returns `self` so
+    /// calls can be chained, e.g. `future = session.execute(...).start()`.
+    fn start(self_: Py<Self>, py: Python<'_>) -> Py<Self> {
+        {
+            let this = self_.borrow(py);
+            let mut state = this.inner.state.lock_py_attached(py).unwrap();
+            Self::ensure_started(&this.inner, &mut state);
+        }
+        self_
+    }
+
     /// Register a callback to be invoked when the future completes successfully.
     ///
     /// The callback is called as `callback(result)`.
