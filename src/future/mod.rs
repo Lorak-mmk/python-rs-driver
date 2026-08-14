@@ -485,6 +485,19 @@ impl PyDriverFuture {
             _ => false,
         }
     }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let state = self.inner.state.lock_py_attached(py).unwrap();
+        match &*state {
+            FutureState::PendingAsyncio { .. } | FutureState::PendingTokio { .. } => {
+                "<DriverFuture pending>".to_string()
+            }
+            FutureState::Ready { result } => match result {
+                Ok(_) => "<DriverFuture finished>".to_string(),
+                Err(e) => format!("<DriverFuture finished exception={}>", e),
+            },
+        }
+    }
 }
 
 #[pymodule]
