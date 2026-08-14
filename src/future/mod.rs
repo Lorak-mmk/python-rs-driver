@@ -1,6 +1,3 @@
-use std::future::Future;
-use std::sync::{Arc, Condvar, Mutex};
-use std::task::Wake;
 use crate::RUNTIME;
 use crate::future::asyncio::waker::AsyncioWaker;
 use crate::future::asyncio::{BoxedFuture, Coroutine, PollResult};
@@ -11,6 +8,9 @@ use pyo3::exceptions::PyTimeoutError;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
 use pyo3::{BoundObject, Py, PyAny, PyResult};
+use std::future::Future;
+use std::sync::{Arc, Condvar, Mutex};
+use std::task::Wake;
 
 use tokio::task::AbortHandle;
 
@@ -230,6 +230,33 @@ impl PyDriverFuture {
             CallbackKind::fire_all(py, callbacks, &err_result);
         }
     }
+    /// Register a [`CallbackKind`] on this future.
+    ///
+    /// - If already `Ready`, invokes the callback immediately.
+    /// - If `PendingTokio`, queues it.
+    /// - If `PendingAsyncio`, transitions to `PendingTokio` first, then queues it.
+    fn register_callback(&self, py: Python<'_>, cb: CallbackKind) {
+        let mut state = self.inner.state.lock_py_attached(py).unwrap();
+        match &mut *state {
+            FutureState::Ready { result } => {
+                let result = clone_result(py, result);
+                drop(state);
+                cb.invoke(py, &result);
+            }
+
+            FutureState::PendingTokio { callbacks, .. } => {
+                callbacks.push(cb);
+            }
+
+            FutureState::PendingAsyncio { .. } => {
+                Self::ensure_started(&self.inner, &mut state);
+                if let FutureState::PendingTokio { callbacks, .. } = &mut *state {
+                    callbacks.push(cb);
+                }
+            }
+        }
+    }
+
     /// Throw an exception into the future.
     /// - Ready: re-raises the exception (coroutine is exhausted).
     /// - PendingAsyncio: delegates to `coroutine.poll(py, Some(exc))`.
@@ -317,6 +344,26 @@ impl PyDriverFuture {
 
     fn close(&self, py: Python<'_>) {
         self.close_future(py, PyRuntimeError::new_err("future was closed"));
+    }
+
+    /// Register a callback to be invoked when the future completes successfully.
+    ///
+    /// The callback is called as `callback(result)`.
+    /// If the future is already done with a success, the callback is invoked immediately.
+    /// If the future is pending on asyncio, it is moved to tokio to support callbacks.
+    fn on_result(&self, py: Python<'_>, callback: Py<PyAny>) {
+        let cb = CallbackKind::on_success(callback);
+        self.register_callback(py, cb);
+    }
+
+    /// Register a callback to be invoked when the future completes with an error.
+    ///
+    /// The callback is called as `callback(exception)`.
+    /// If the future is already done with an error, the callback is invoked immediately.
+    /// If the future is pending on asyncio, it is moved to tokio to support callbacks.
+    fn on_error(&self, py: Python<'_>, callback: Py<PyAny>) {
+        let cb = CallbackKind::on_error(callback);
+        self.register_callback(py, cb);
     }
 }
 
