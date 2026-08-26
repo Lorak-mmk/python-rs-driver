@@ -109,6 +109,53 @@ impl PyDriverFuture {
             }),
         )
     }
+    /// Create a `Py<PyDriverFuture>` from a future returning `Result<T, E>`,
+    /// spawning it on the tokio runtime immediately: the future starts in
+    /// `PendingTokio` rather than lazily transitioning from `PendingAsyncio`.
+    pub(crate) fn spawn_on_tokio<Fut, T, E>(
+        py: Python<'_>,
+        future: Fut,
+    ) -> PyResult<Py<PyDriverFuture>>
+    where
+        Fut: Future<Output = Result<T, E>> + Send + 'static,
+        T: for<'py> IntoPyObject<'py>,
+        E: Into<PyErr>,
+    {
+        let wrapped = async move {
+            let result = future.await;
+            Python::attach(|py| {
+                result.map_err(Into::into).and_then(|v| {
+                    v.into_pyobject(py)
+                        .map(|b| b.into_any().unbind())
+                        .map_err(Into::into)
+                })
+            })
+        };
+
+        let waker = Arc::new(AsyncioWaker::new());
+        let inner = Arc::new(FutureInner {
+            state: Mutex::new(FutureState::PendingTokio {
+                callbacks: Vec::new(),
+                abort_handle: None,
+                waker: Arc::clone(&waker),
+            }),
+            ready: Condvar::new(),
+        });
+
+        {
+            let mut state = inner.state.lock_py_attached(py).unwrap();
+            let abort_handle = Self::spawn_future_on_tokio(wrapped, &inner, &waker);
+            if let FutureState::PendingTokio {
+                abort_handle: ah, ..
+            } = &mut *state
+            {
+                *ah = Some(abort_handle);
+            }
+        }
+
+        Py::new(py, PyDriverFuture { inner })
+    }
+
     /// Create an already-resolved PyDriverFuture.
     pub(crate) fn ready(py: Python, result: PyResult<Py<PyAny>>) -> PyResult<Py<PyDriverFuture>> {
         Py::new(
