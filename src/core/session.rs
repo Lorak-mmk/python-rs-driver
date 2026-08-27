@@ -51,12 +51,10 @@ impl SessionCore {
         keyspace: String,
         case_sensitive: bool,
     ) -> Result<(), DriverUseKeyspaceError> {
-        self.spawn_on_runtime(async move |s| {
-            s.use_keyspace(keyspace, case_sensitive)
-                .await
-                .map_err(DriverUseKeyspaceError::from)
-        })
-        .await
+        self.inner
+            .use_keyspace(keyspace, case_sensitive)
+            .await
+            .map_err(DriverUseKeyspaceError::from)
     }
 
     /// Executes `statement`, returning the future that performs the request.
@@ -131,12 +129,10 @@ impl SessionCore {
         factory: Option<Py<RowFactory>>,
     ) -> Result<RequestResultCore, DriverExecuteError> {
         let result = self
-            .spawn_on_runtime(async move |s| {
-                s.batch(&batch.inner, batch.values)
-                    .await
-                    .map_err(DriverExecuteError::rust_driver_execution_error)
-            })
-            .await?;
+            .inner
+            .batch(&batch.inner, batch.values)
+            .await
+            .map_err(DriverExecuteError::rust_driver_execution_error)?;
 
         Ok(RequestResultCore::new(result, Pager::unpaged(), factory))
     }
@@ -144,23 +140,19 @@ impl SessionCore {
     pub(crate) async fn await_schema_agreement(
         self,
     ) -> Result<uuid::Uuid, DriverSchemaAgreementError> {
-        self.spawn_on_runtime(async move |s| {
-            s.await_schema_agreement()
-                .await
-                .map_err(DriverSchemaAgreementError::rust_driver_schema_agreement_error)
-        })
-        .await
+        self.inner
+            .await_schema_agreement()
+            .await
+            .map_err(DriverSchemaAgreementError::rust_driver_schema_agreement_error)
     }
 
     pub(crate) async fn check_schema_agreement(
         self,
     ) -> Result<Option<uuid::Uuid>, DriverSchemaAgreementError> {
-        self.spawn_on_runtime(async move |s| {
-            s.check_schema_agreement()
-                .await
-                .map_err(DriverSchemaAgreementError::rust_driver_schema_agreement_error)
-        })
-        .await
+        self.inner
+            .check_schema_agreement()
+            .await
+            .map_err(DriverSchemaAgreementError::rust_driver_schema_agreement_error)
     }
 
     /// Returns the cached Python cluster state snapshot, refreshing it first if
@@ -191,19 +183,19 @@ impl SessionCore {
         prepared: BoundStatement,
         factory: Option<Py<RowFactory>>,
     ) -> Result<RequestResultCore, DriverExecuteError> {
-        let result = self
-            .spawn_on_runtime(async move |s| match prepared {
-                BoundStatement::Prepared(p, serialized_values) => s
-                    .execute_unstable(&p, &serialized_values, false, PagingState::start())
-                    .await
-                    .map(|(result, _paging_response)| result)
-                    .map_err(DriverExecuteError::rust_driver_execution_error),
-                BoundStatement::Unprepared(q, values) => s
-                    .query_unpaged(q.inner, values)
-                    .await
-                    .map_err(DriverExecuteError::rust_driver_execution_error),
-            })
-            .await?;
+        let result = match prepared {
+            BoundStatement::Prepared(p, serialized_values) => self
+                .inner
+                .execute_unstable(&p, &serialized_values, false, PagingState::start())
+                .await
+                .map(|(result, _paging_response)| result)
+                .map_err(DriverExecuteError::rust_driver_execution_error)?,
+            BoundStatement::Unprepared(q, values) => self
+                .inner
+                .query_unpaged(q.inner, values)
+                .await
+                .map_err(DriverExecuteError::rust_driver_execution_error)?,
+        };
 
         Ok(RequestResultCore::new(result, Pager::unpaged(), factory))
     }
@@ -214,9 +206,18 @@ impl SessionCore {
         paging_state: PagingState,
         factory: Option<Py<RowFactory>>,
     ) -> Result<RequestResultCore, DriverExecuteError> {
-        let (result, paging_response) = self
-            .execute_single_page(paging_state, Arc::clone(&prepared))
-            .await?;
+        let (result, paging_response) = match &*prepared {
+            BoundStatement::Prepared(p, serialized_values) => self
+                .inner
+                .execute_unstable(p, serialized_values, true, paging_state)
+                .await
+                .map_err(DriverExecuteError::rust_driver_execution_error)?,
+            BoundStatement::Unprepared(q, values) => self
+                .inner
+                .query_single_page(q.inner.clone(), values, paging_state)
+                .await
+                .map_err(DriverExecuteError::rust_driver_execution_error)?,
+        };
 
         Ok(RequestResultCore::new(
             result,
